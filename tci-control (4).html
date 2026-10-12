@@ -1,0 +1,1026 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1216">
+<title>TCI Control</title>
+<!--
+  TCI Control — client web per server TCI (piHPSDR / HL2)
+  - Uso solo in rete locale. TCI non ha autenticazione: NON esporre la porta su Internet.
+  - Servire la pagina in HTTP (non HTTPS): i browser bloccano ws:// da pagine HTTPS.
+  - Nessuna dipendenza esterna.
+  - Panadapter dallo stream IQ (FFT + waterfall) e audio RX via Web Audio, solo ricezione.
+-->
+<style>
+:root{
+  --bg:#f3f4f6; --card:#ffffff; --fg:#14171c; --muted:#5d6672; --line:#d9dde3;
+  --accent:#0b6bcb; --accent-fg:#ffffff; --ok:#1a8a3c; --warn:#b26a00; --err:#c62828;
+  --tx:#d32f2f; --tx-fg:#ffffff; --meter-bg:#e4e7eb; --meter-a:#2e9d4f; --meter-b:#e0a800; --meter-c:#d32f2f;
+  --mono:ui-monospace,"DejaVu Sans Mono","Menlo","Consolas",monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f1216; --card:#181c22; --fg:#e8ebef; --muted:#97a0ab; --line:#2a3039;
+    --accent:#4a9eff; --accent-fg:#0b0e12; --ok:#3ccf6a; --warn:#f0a83a; --err:#ff6b6b;
+    --tx:#ff3b3b; --tx-fg:#ffffff; --meter-bg:#232932;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0f1216; --card:#181c22; --fg:#e8ebef; --muted:#97a0ab; --line:#2a3039;
+  --accent:#4a9eff; --accent-fg:#0b0e12; --ok:#3ccf6a; --warn:#f0a83a; --err:#ff6b6b;
+  --tx:#ff3b3b; --tx-fg:#ffffff; --meter-bg:#232932;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{padding:12px 16px calc(24px + env(safe-area-inset-bottom));max-width:720px;margin:0 auto}
+header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+header h1{font-size:1.1rem;margin:0;flex:1}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--muted);flex:none}
+.dot.connecting{background:var(--warn)} .dot.open{background:var(--ok)} .dot.closed{background:var(--err)}
+#statusText{font-size:.85rem;color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.card h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 10px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.grow{flex:1;min-width:0}
+label{font-size:.85rem;color:var(--muted)}
+input,select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 10px;min-height:44px}
+input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button{font:inherit;font-weight:600;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:8px;padding:9px 12px;min-height:44px;cursor:pointer;touch-action:manipulation}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+button.sel{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+.grid{display:grid;gap:8px}
+.g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)} .g5{grid-template-columns:repeat(5,1fr)}
+@media (max-width:420px){.g5{grid-template-columns:repeat(4,1fr)}}
+#freq{font-family:var(--mono);font-size:clamp(2rem,10vw,3.4rem);font-weight:700;text-align:center;letter-spacing:.02em;padding:6px 0 2px;user-select:none;cursor:ns-resize}
+#freq .hz{opacity:.6}
+#freqSub{text-align:center;color:var(--muted);font-size:.9rem;margin-bottom:10px}
+#modeBadge{font-weight:700;color:var(--fg)}
+.meter{position:relative;height:26px;background:var(--meter-bg);border-radius:6px;overflow:hidden}
+.meter .bar{position:absolute;inset:0 auto 0 0;width:0;background:linear-gradient(90deg,var(--meter-a) 0%,var(--meter-a) 55%,var(--meter-b) 62%,var(--meter-c) 100%);background-size:var(--full,100%) 100%;transition:width .12s linear}
+.meter .peak{position:absolute;top:0;bottom:0;width:2px;background:var(--fg);opacity:.7;left:0}
+.scale{display:flex;justify-content:space-between;font-family:var(--mono);font-size:.7rem;color:var(--muted);margin-top:4px}
+#smeterVal{font-family:var(--mono);font-size:1.4rem;font-weight:700}
+#txSensors{font-family:var(--mono);font-size:.9rem;color:var(--muted)}
+#ptt{width:100%;min-height:76px;font-size:1.5rem;letter-spacing:.06em;border-radius:12px}
+#ptt.armed{background:var(--card);border:2px solid var(--tx);color:var(--tx)}
+#ptt.on{background:var(--tx);color:var(--tx-fg);border-color:var(--tx);animation:pulse 1s infinite}
+@keyframes pulse{50%{filter:brightness(1.25)}}
+@media (prefers-reduced-motion:reduce){#ptt.on{animation:none}}
+#txInfo{text-align:center;font-family:var(--mono);margin-top:8px;min-height:1.4em}
+.switch{display:flex;align-items:center;gap:8px;font-size:.95rem;color:var(--fg)}
+.switch input{width:22px;height:22px;min-height:0}
+#banner{display:none;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-weight:600;background:var(--err);color:#fff}
+#banner.show{display:block}
+#banner button{margin-left:8px;min-height:32px;padding:4px 10px;background:#fff;color:#000;border:0}
+details summary{cursor:pointer;color:var(--muted);font-size:.9rem;padding:4px 0}
+#log{font-family:var(--mono);font-size:.75rem;height:180px;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;white-space:pre-wrap;word-break:break-all;margin-top:8px}
+#log .in{color:var(--ok)} #log .out{color:var(--accent)} #log .err{color:var(--err)} #log .sys{color:var(--warn)}
+.hint{font-size:.8rem;color:var(--muted);margin:8px 0 0}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--fg);padding:18px;max-width:min(92vw,420px)}
+dialog::backdrop{background:rgba(0,0,0,.55)}
+dialog h3{margin:0 0 8px;color:var(--tx)}
+dialog .big{font-family:var(--mono);font-size:1.3rem;font-weight:700;margin:6px 0}
+dialog .actions{display:flex;gap:8px;margin-top:14px}
+dialog .actions button{flex:1}
+#confirmTx{background:var(--tx);color:var(--tx-fg);border-color:var(--tx)}
+/* Panadapter / audio */
+.pan-wrap{position:relative;border-radius:8px;overflow:hidden;background:#05070a;touch-action:pan-y;cursor:crosshair}
+#spec,#wf{display:block;width:100%}
+#spec{height:150px} #wf{height:170px}
+@media (max-width:420px){#spec{height:120px} #wf{height:130px}}
+.pan-axis{display:flex;justify-content:space-between;font-family:var(--mono);font-size:.7rem;color:var(--muted);margin-top:4px}
+.ctrls{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:10px}
+.ctrls label{display:flex;flex-direction:column;gap:4px}
+input[type=range]{min-height:0;padding:0;border:0;background:none;width:100%;accent-color:var(--accent)}
+.stat{font-family:var(--mono);font-size:.8rem;color:var(--muted);margin:8px 0 0}
+</style>
+</head>
+<body>
+
+<header>
+  <span id="dot" class="dot"></span>
+  <h1>TCI Control</h1>
+  <span id="statusText">Disconnesso</span>
+</header>
+
+<div id="banner" role="alert"><span id="bannerText"></span><button id="bannerClose" type="button">OK</button></div>
+
+<!-- Connessione -->
+<section class="card">
+  <h2>Connessione</h2>
+  <div class="row">
+    <div class="grow"><label for="host">Host</label><br><input id="host" style="width:100%" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+    <div style="width:110px"><label for="port">Porta</label><br><input id="port" type="number" inputmode="numeric" style="width:100%"></div>
+    <div style="width:80px"><label for="rxsel">TRX</label><br><select id="rxsel" style="width:100%"><option value="0">0</option><option value="1">1</option></select></div>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button id="btnConnect" class="primary grow" type="button">Connetti</button>
+    <button id="btnDisconnect" class="grow" type="button" disabled>Disconnetti</button>
+  </div>
+  <p class="hint" id="devInfo">—</p>
+</section>
+
+<!-- Frequenza e modo -->
+<section class="card">
+  <h2>Frequenza</h2>
+  <div id="freq" title="Rotella del mouse per sintonizzare con il passo selezionato">--.---.---</div>
+  <div id="freqSub">Modo: <span id="modeBadge">—</span> · Passo rotella: <span id="wheelStepLbl">1 kHz</span></div>
+  <div class="grid g3">
+    <button type="button" data-step="-10000">−10k</button>
+    <button type="button" data-step="-1000">−1k</button>
+    <button type="button" data-step="-100">−100</button>
+    <button type="button" data-step="10000">+10k</button>
+    <button type="button" data-step="1000">+1k</button>
+    <button type="button" data-step="100">+100</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <input id="freqIn" class="grow" inputmode="decimal" placeholder="es. 14.074 · 7074 · 3573000" autocomplete="off">
+    <button id="btnSetFreq" class="primary" type="button">Imposta</button>
+  </div>
+  <p class="hint">Valori &lt; 100 = MHz, &lt; 100000 = kHz, altrimenti Hz.</p>
+  <h2 style="margin-top:14px">Bande</h2>
+  <div class="grid g5" id="bands"></div>
+  <h2 style="margin-top:14px">Modo</h2>
+  <div class="grid g4" id="modes"></div>
+</section>
+
+<!-- Panadapter -->
+<section class="card">
+  <h2>Panadapter (IQ)</h2>
+  <div class="row" style="margin-bottom:10px">
+    <button id="btnIq" type="button" class="grow" disabled>Avvia IQ</button>
+    <select id="iqRate" aria-label="Larghezza di banda IQ">
+      <option value="48000">48 kHz</option><option value="96000">96 kHz</option>
+      <option value="192000">192 kHz</option><option value="384000">384 kHz</option>
+    </select>
+  </div>
+  <div class="pan-wrap" id="panWrap" title="Clicca o tocca per sintonizzare"><canvas id="spec"></canvas><canvas id="wf"></canvas></div>
+  <div class="pan-axis"><span id="axL">—</span><span id="axC">—</span><span id="axR">—</span></div>
+  <div class="ctrls">
+    <label>FFT <select id="fftSize"><option value="1024">1024</option><option value="2048" selected>2048</option><option value="4096">4096</option></select></label>
+    <label>Media <input type="range" id="avg" min="0" max="0.95" step="0.05" value="0.6"></label>
+    <label>Fondo <span class="stat" id="floorLbl" style="margin:0">-130 dB</span><input type="range" id="floor" min="-170" max="-40" step="1" value="-130"></label>
+    <label>Dinamica <span class="stat" id="rangeLbl" style="margin:0">70 dB</span><input type="range" id="range" min="30" max="120" step="5" value="70"></label>
+  </div>
+  <div class="row" style="margin-top:8px;gap:16px">
+    <label class="switch"><input type="checkbox" id="autoFloor" checked> Fondo automatico</label>
+    <label class="switch"><input type="checkbox" id="iqSwap"> Inverti I/Q</label>
+  </div>
+  <p class="stat" id="iqStat">IQ fermo</p>
+  <p class="hint">Tocca o clicca il panadapter per sintonizzare. A 192–384 kHz il flusso supera 1,5–3 MB/s: sul Wi-Fi del telefono usa 48 kHz.</p>
+</section>
+
+<!-- S-meter -->
+<section class="card">
+  <h2>S-meter</h2>
+  <div class="row" style="justify-content:space-between;margin-bottom:6px">
+    <span id="smeterVal">—</span><span id="smeterDbm" style="font-family:var(--mono);color:var(--muted)">— dBm</span>
+  </div>
+  <div class="meter"><div class="bar" id="smBar"></div><div class="peak" id="smPeak"></div></div>
+  <div class="scale"><span>S1</span><span>S3</span><span>S5</span><span>S7</span><span>S9</span><span>+20</span><span>+40</span><span>+60</span></div>
+  <p id="txSensors" class="hint"></p>
+</section>
+
+<!-- Audio RX -->
+<section class="card">
+  <h2>Audio RX</h2>
+  <div class="row">
+    <button id="btnAudio" type="button" class="grow" disabled>Avvia audio</button>
+    <button id="btnMute" type="button">Muto</button>
+  </div>
+  <label style="display:block;margin-top:10px">Volume <input type="range" id="vol" min="0" max="1.5" step="0.05" value="0.8"></label>
+  <p class="stat" id="audioStat">Audio fermo</p>
+</section>
+
+<!-- PTT -->
+<section class="card">
+  <h2>Trasmissione</h2>
+  <div class="row" style="justify-content:space-between;margin-bottom:10px">
+    <label class="switch"><input type="checkbox" id="arm"> Abilita TX</label>
+    <div class="row"><label for="txTimeout">Timeout</label>
+      <select id="txTimeout">
+        <option value="15">15 s</option><option value="30">30 s</option><option value="60">60 s</option>
+        <option value="120">2 min</option><option value="300">5 min</option>
+      </select>
+    </div>
+  </div>
+  <button id="ptt" type="button" disabled>PTT</button>
+  <div id="txInfo"></div>
+  <p class="hint">Il TX si interrompe automaticamente a fine timeout, con il tasto Esc, se la pagina va in background o se il server non risponde più. Se la connessione cade durante il TX la pagina non può più comandare la radio: controlla subito la radio.</p>
+</section>
+
+<!-- Log -->
+<section class="card">
+  <details>
+    <summary>Log protocollo (diagnostica)</summary>
+    <div class="row" style="margin-top:8px">
+      <label class="switch"><input type="checkbox" id="verbose"> Mostra anche S-meter</label>
+      <button id="btnClearLog" type="button" style="margin-left:auto">Pulisci</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="rawCmd" class="grow" placeholder="Comando TCI manuale, es. vfo:0,0;" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button id="btnRaw" type="button">Invia</button>
+    </div>
+    <div id="log"></div>
+  </details>
+</section>
+
+<dialog id="txDialog">
+  <h3>Confermi la trasmissione?</h3>
+  <div class="big" id="dlgFreq">—</div>
+  <div>Modo: <b id="dlgMode">—</b> · Timeout: <b id="dlgTimeout">—</b></div>
+  <p class="hint">Verifica antenna, potenza e frequenza libera prima di confermare.</p>
+  <div class="actions">
+    <button id="cancelTx" type="button">Annulla</button>
+    <button id="confirmTx" type="button">TRASMETTI</button>
+  </div>
+</dialog>
+
+<script>
+(() => {
+'use strict';
+const $ = s => document.querySelector(s);
+
+// ---------- Storage (solo preferenze locali; può fallire) ----------
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem('tci.' + k); return v === null ? d : JSON.parse(v); }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem('tci.' + k, JSON.stringify(v)); }catch(e){} }
+};
+
+// ---------- Stato ----------
+const S = {
+  ws: null, connected: false, ready: false, rx: 0,
+  freq: null, mode: null, modes: ['lsb','usb','cw','am','fm','digl','digu'],
+  minF: 0, maxF: 0,
+  tx: false,          // stato TX riportato dalla radio
+  ourTx: false,       // TX avviato da questa pagina
+  txStart: 0, stopAt: 0, txTick: null, txConfirmCheck: null,
+  smeterPush: false, pollTimer: null,
+  autoReconnect: false, reconnectTimer: null, reconnectDelay: 2000,
+  lastMsg: 0, wheelStep: store.get('wheelStep', 1000),
+  peak: 0, peakTime: 0
+};
+
+const BANDS = [
+  ['160', 1810000, 2000000, 1840000], ['80', 3500000, 3800000, 3573000],
+  ['40', 7000000, 7200000, 7074000],  ['30', 10100000, 10150000, 10136000],
+  ['20', 14000000, 14350000, 14074000], ['17', 18068000, 18168000, 18100000],
+  ['15', 21000000, 21450000, 21074000], ['12', 24890000, 24990000, 24915000],
+  ['10', 28000000, 29700000, 28074000]
+];
+
+// ---------- Log ----------
+const logEl = $('#log');
+function log(text, cls){
+  const line = document.createElement('div');
+  line.className = cls || '';
+  const t = new Date().toTimeString().slice(0, 8);
+  line.textContent = t + ' ' + text;
+  logEl.appendChild(line);
+  while (logEl.childNodes.length > 400) logEl.removeChild(logEl.firstChild);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+const isMeterMsg = m => /^(rx_smeter|rx_sensors|rx_channel_sensors|tx_sensors)/i.test(m);
+
+function banner(text){
+  $('#bannerText').textContent = text;
+  $('#banner').classList.add('show');
+}
+$('#bannerClose').onclick = () => $('#banner').classList.remove('show');
+
+// ---------- UI stato connessione ----------
+function setStatus(st){
+  const dot = $('#dot');
+  dot.className = 'dot ' + st;
+  const txt = { connecting: 'Connessione…', open: S.ready ? 'Connesso' : 'Connesso (attesa)', closed: 'Disconnesso' }[st] || st;
+  $('#statusText').textContent = txt;
+  $('#btnConnect').disabled = st === 'connecting' || st === 'open';
+  $('#btnDisconnect').disabled = st === 'closed' && !S.autoReconnect;
+  updatePttUi();
+  streamsUi();
+}
+
+// ---------- WebSocket ----------
+function connect(){
+  clearTimeout(S.reconnectTimer);
+  if (S.ws){ try{ S.ws.onclose = null; S.ws.close(); }catch(e){} S.ws = null; }
+  const host = $('#host').value.trim() || 'localhost';
+  const port = parseInt($('#port').value, 10) || 40001;
+  S.rx = parseInt($('#rxsel').value, 10) || 0;
+  store.set('host', host); store.set('port', port); store.set('rx', S.rx);
+
+  if (location.protocol === 'https:'){
+    banner('Questa pagina è in HTTPS: il browser blocca ws://. Aprila in HTTP o da file locale.');
+  }
+  let ws;
+  try { ws = new WebSocket('ws://' + host + ':' + port); }
+  catch (e){ log('Errore: ' + e.message, 'err'); return; }
+  ws.binaryType = 'arraybuffer';
+  S.ws = ws; S.ready = false; S.smeterPush = false;
+  setStatus('connecting');
+
+  ws.onopen = () => {
+    S.connected = true; S.autoReconnect = true; S.reconnectDelay = 2000; S.lastMsg = Date.now();
+    log('Connesso a ' + host + ':' + port, 'sys');
+    setStatus('open');
+    // Se il server non manda "ready;", chiediamo comunque lo stato.
+    setTimeout(() => { if (S.connected && !S.ready) onReady(true); }, 1500);
+  };
+  ws.onmessage = ev => {
+    S.lastMsg = Date.now();
+    if (typeof ev.data !== 'string'){ handleBinary(ev.data); return; } // stream IQ / audio
+    ev.data.split(';').forEach(m => { m = m.trim(); if (m) handle(m); });
+  };
+  ws.onerror = () => log('Errore WebSocket: server TCI attivo? Host/porta corretti? TCI in ascolto sulla rete e non solo su localhost?', 'err');
+  ws.onclose = () => {
+    const was = S.connected;
+    S.connected = false; S.ready = false; S.ws = null;
+    stopPoll();
+    iqStop(false); audioStop(false);
+    if (S.ourTx){
+      endTxLocal('connessione persa');
+      banner('Connessione persa durante il TX: la pagina non può più spegnere il trasmettitore. Controlla subito la radio!');
+    }
+    if (S.tx){ S.tx = false; }
+    setStatus('closed');
+    if (was) log('Connessione chiusa', 'sys');
+    if (S.autoReconnect) scheduleReconnect();
+  };
+}
+function scheduleReconnect(){
+  clearTimeout(S.reconnectTimer);
+  log('Nuovo tentativo tra ' + Math.round(S.reconnectDelay / 1000) + ' s', 'sys');
+  S.reconnectTimer = setTimeout(connect, S.reconnectDelay);
+  S.reconnectDelay = Math.min(S.reconnectDelay * 2, 30000);
+}
+function disconnect(){
+  S.autoReconnect = false;
+  clearTimeout(S.reconnectTimer);
+  if (S.ourTx) stopTx('disconnessione');
+  if (P.on) iqStop(true);
+  if (A.on) audioStop(true);
+  if (S.ws){ const ws = S.ws; setTimeout(() => { try{ ws.close(); }catch(e){} }, 150); }
+  else setStatus('closed');
+}
+function send(cmd){
+  if (!S.ws || S.ws.readyState !== 1) return false;
+  if (!cmd.endsWith(';')) cmd += ';';
+  S.ws.send(cmd);
+  if (!isMeterMsg(cmd) || $('#verbose').checked) log('→ ' + cmd, 'out');
+  return true;
+}
+
+function onReady(fallback){
+  if (S.ready) return;
+  S.ready = true;
+  if (fallback) log('Nessun "ready" dal server: richiedo lo stato comunque', 'sys');
+  setStatus('open');
+  send('vfo:' + S.rx + ',0');
+  send('dds:' + S.rx);
+  send('modulation:' + S.rx);
+  send('trx:' + S.rx);
+  send('rx_sensors_enable:true,200'); // se supportato, S-meter in push
+  startPoll();
+}
+
+// ---------- Parser messaggi TCI ----------
+function handle(m){
+  if (!isMeterMsg(m) || $('#verbose').checked) log('← ' + m + ';', 'in');
+  const i = m.indexOf(':');
+  const name = (i < 0 ? m : m.slice(0, i)).toLowerCase();
+  const a = i < 0 ? [] : m.slice(i + 1).split(',').map(s => s.trim());
+  const isRx = n => parseInt(n, 10) === S.rx;
+
+  switch (name){
+    case 'ready': onReady(false); break;
+    case 'protocol': $('#devInfo').dataset.p = a.join(' '); showDev(); break;
+    case 'device': $('#devInfo').dataset.d = a.join(' '); showDev(); break;
+    case 'vfo_limits':
+      S.minF = parseInt(a[0], 10) || 0; S.maxF = parseInt(a[1], 10) || 0; break;
+    case 'modulations_list':
+      if (a.length){ S.modes = a.filter(Boolean); buildModes(); } break;
+    case 'vfo':
+      if (a.length >= 3 && isRx(a[0]) && parseInt(a[1], 10) === 0){
+        const f = parseInt(a[2], 10); if (f > 0) setFreqUi(f);
+      } break;
+    case 'dds':                  // dds:rx,freq = centro dello spettro IQ
+      if (a.length >= 2 && isRx(a[0])){ const f = parseInt(a[1], 10); if (f > 0){ P.center = f; updateAxis(); } } break;
+    case 'modulation':
+      if (a.length >= 2 && isRx(a[0])) setModeUi(a[1]); break;
+    case 'trx':
+      if (a.length >= 2 && isRx(a[0])){
+        const on = a[1].toLowerCase() === 'true';
+        S.tx = on;
+        if (!on && S.ourTx) endTxLocal('radio tornata in RX');
+        updatePttUi();
+      } break;
+    case 'rx_smeter':            // rx_smeter:rx,chan,dBm (risposta a richiesta)
+      if (a.length >= 3 && isRx(a[0]) && parseInt(a[1], 10) === 0) setSmeter(parseFloat(a[2])); break;
+    case 'rx_channel_sensors':   // rx_channel_sensors:rx,chan,dBm (push)
+      if (a.length >= 3 && isRx(a[0]) && parseInt(a[1], 10) === 0){ pushMode(); setSmeter(parseFloat(a[2])); } break;
+    case 'rx_sensors':           // rx_sensors:rx,dBm (push)
+      if (a.length >= 2 && isRx(a[0])){ pushMode(); setSmeter(parseFloat(a[1])); } break;
+    case 'tx_sensors':           // tx_sensors:rx,mic,pwr_peak,pwr_rms,swr
+      if (a.length >= 5 && isRx(a[0])){
+        $('#txSensors').textContent = 'TX: ' + (+a[2]).toFixed(0) + ' W pk · SWR ' + (+a[4]).toFixed(2);
+      } break;
+  }
+}
+function showDev(){
+  const el = $('#devInfo');
+  el.textContent = [el.dataset.d, el.dataset.p].filter(Boolean).join(' · ') || '—';
+}
+
+// ---------- Frequenza ----------
+function fmtFreq(hz){
+  const s = String(Math.round(hz)).padStart(7, '0');
+  const mhz = s.slice(0, -6), khz = s.slice(-6, -3), h = s.slice(-3);
+  return mhz + '.' + khz + '.<span class="hz">' + h + '</span>';
+}
+function setFreqUi(hz){
+  S.freq = hz;
+  $('#freq').innerHTML = fmtFreq(hz);
+  updateAxis();
+  const b = BANDS.find(x => hz >= x[1] && hz <= x[2]);
+  if (b) store.set('band.' + b[0], hz);
+  document.querySelectorAll('#bands button').forEach(btn => btn.classList.toggle('sel', !!b && btn.dataset.band === b[0]));
+}
+function setFreq(hz){
+  if (!S.connected) return;
+  hz = Math.round(hz);
+  if (S.minF && hz < S.minF) hz = S.minF;
+  if (S.maxF && hz > S.maxF) hz = S.maxF;
+  if (hz <= 0) return;
+  if (S.ourTx){ log('Cambio frequenza ignorato durante il TX', 'sys'); return; }
+  send('vfo:' + S.rx + ',0,' + hz);
+  setFreqUi(hz); // aggiornamento ottimistico, la radio conferma con vfo:
+}
+function parseFreq(str){
+  let s = str.trim().replace(/\s/g, '');
+  if (!s) return null;
+  if ((s.match(/\./g) || []).length > 1) s = s.replace(/\./g, '');   // 14.074.500 → Hz
+  s = s.replace(',', '.');
+  const v = parseFloat(s);
+  if (!isFinite(v) || v <= 0) return null;
+  if (v < 100) return Math.round(v * 1e6);
+  if (v < 100000) return Math.round(v * 1e3);
+  return Math.round(v);
+}
+document.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
+  if (S.freq != null) setFreq(S.freq + parseInt(b.dataset.step, 10));
+});
+$('#btnSetFreq').onclick = () => {
+  const f = parseFreq($('#freqIn').value);
+  if (f == null){ log('Frequenza non valida', 'err'); return; }
+  setFreq(f); $('#freqIn').value = '';
+};
+$('#freqIn').addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnSetFreq').click(); });
+
+// Rotella del mouse sul display; clic sul display cambia il passo
+const WHEEL_STEPS = [10, 100, 1000, 10000];
+function showWheelStep(){ const s = S.wheelStep; $('#wheelStepLbl').textContent = s >= 1000 ? (s / 1000) + ' kHz' : s + ' Hz'; }
+$('#freq').addEventListener('wheel', e => {
+  e.preventDefault();
+  if (S.freq == null) return;
+  setFreq(S.freq + (e.deltaY < 0 ? 1 : -1) * S.wheelStep);
+}, { passive: false });
+$('#freq').addEventListener('click', () => {
+  const i = (WHEEL_STEPS.indexOf(S.wheelStep) + 1) % WHEEL_STEPS.length;
+  S.wheelStep = WHEEL_STEPS[i]; store.set('wheelStep', S.wheelStep); showWheelStep();
+});
+
+// Bande: ricorda l'ultima frequenza usata in ciascuna banda
+function buildBands(){
+  const box = $('#bands'); box.innerHTML = '';
+  BANDS.forEach(([name, lo, hi, def]) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = name + 'm'; b.dataset.band = name;
+    b.onclick = () => {
+      let f = store.get('band.' + name, def);
+      if (!(f >= lo && f <= hi)) f = def;
+      setFreq(f);
+    };
+    box.appendChild(b);
+  });
+}
+
+// ---------- Modo ----------
+function buildModes(){
+  const box = $('#modes'); box.innerHTML = '';
+  S.modes.forEach(mode => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = mode.toUpperCase(); b.dataset.mode = mode.toLowerCase();
+    b.onclick = () => {
+      if (!S.connected) return;
+      if (S.ourTx){ log('Cambio modo ignorato durante il TX', 'sys'); return; }
+      send('modulation:' + S.rx + ',' + mode);
+      setModeUi(mode);
+    };
+    box.appendChild(b);
+  });
+  if (S.mode) setModeUi(S.mode);
+}
+function setModeUi(mode){
+  S.mode = mode;
+  $('#modeBadge').textContent = mode.toUpperCase();
+  document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('sel', b.dataset.mode === mode.toLowerCase()));
+}
+
+// ---------- S-meter ----------
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+function dbmToPct(d){
+  // S1 = -121 dBm ... S9 = -73 dBm (60% della barra), S9+60 = -13 dBm (100%)
+  return d <= -73 ? clamp((d + 121) / 48 * 60, 0, 60) : clamp(60 + (d + 73) / 60 * 40, 60, 100);
+}
+function dbmToS(d){
+  if (d <= -73){ const s = clamp(Math.round((d + 127) / 6), 0, 9); return 'S' + s; }
+  return 'S9+' + Math.round(d + 73);
+}
+function setSmeter(d){
+  if (!isFinite(d)) return;
+  const pct = dbmToPct(d);
+  $('#smBar').style.width = pct + '%';
+  $('#smBar').style.setProperty('--full', (pct > 0 ? 100 / pct * 100 : 100) + '%');
+  const now = Date.now();
+  if (pct >= S.peak || now - S.peakTime > 1500){ S.peak = pct; S.peakTime = now; }
+  $('#smPeak').style.left = 'calc(' + S.peak + '% - 1px)';
+  $('#smeterVal').textContent = dbmToS(d);
+  $('#smeterDbm').textContent = d.toFixed(0) + ' dBm';
+}
+function startPoll(){
+  stopPoll();
+  S.pollTimer = setInterval(() => {
+    if (!S.connected) return;
+    if (!S.smeterPush) send('rx_smeter:' + S.rx + ',0');
+    // Watchdog: se il server tace troppo a lungo durante il nostro TX, spegniamo.
+    if (S.ourTx && Date.now() - S.lastMsg > 5000) stopTx('nessuna risposta dal server da 5 s');
+  }, 300);
+}
+function stopPoll(){ clearInterval(S.pollTimer); S.pollTimer = null; }
+function pushMode(){ if (!S.smeterPush){ S.smeterPush = true; log('S-meter ricevuto in push: polling disattivato', 'sys'); } }
+
+// ---------- PTT ----------
+const dlg = $('#txDialog');
+function timeoutSec(){ return parseInt($('#txTimeout').value, 10) || 30; }
+
+function updatePttUi(){
+  const btn = $('#ptt');
+  const armed = $('#arm').checked;
+  btn.classList.remove('on', 'armed');
+  if (S.ourTx){
+    btn.disabled = false; btn.classList.add('on'); btn.textContent = '■ STOP TX';
+  } else if (S.tx && Date.now() - S.stopAt < 1500){
+    // Stop appena inviato, la radio non ha ancora confermato l'RX
+    btn.disabled = !S.connected; btn.classList.add('on'); btn.textContent = '■ Arresto TX…';
+  } else if (S.tx){
+    btn.disabled = !S.connected; btn.classList.add('on'); btn.textContent = '■ STOP (TX esterno)';
+    $('#txInfo').textContent = 'Radio in TX (avviato da altro programma)';
+    $('#txInfo').dataset.ext = '1';
+  } else {
+    btn.disabled = !(S.connected && armed);
+    if (armed) btn.classList.add('armed');
+    btn.textContent = armed ? 'PTT' : 'PTT (bloccato)';
+    if ($('#txInfo').dataset.ext){ $('#txInfo').textContent = ''; delete $('#txInfo').dataset.ext; }
+  }
+}
+$('#arm').onchange = updatePttUi;
+$('#txTimeout').onchange = () => store.set('txTimeout', timeoutSec());
+
+$('#ptt').onclick = () => {
+  if (S.ourTx){ stopTx('manuale'); return; }
+  if (S.tx){ send('trx:' + S.rx + ',false'); return; } // stop di un TX esterno
+  if (!S.connected || !$('#arm').checked) return;
+  $('#dlgFreq').textContent = S.freq ? $('#freq').textContent + ' Hz' : 'frequenza sconosciuta';
+  $('#dlgMode').textContent = S.mode ? S.mode.toUpperCase() : '—';
+  $('#dlgTimeout').textContent = timeoutSec() + ' s';
+  if (typeof dlg.showModal === 'function') dlg.showModal();
+  else if (confirm('Confermi la trasmissione?')) startTx();
+};
+$('#cancelTx').onclick = () => dlg.close();
+$('#confirmTx').onclick = () => { dlg.close(); startTx(); };
+
+function startTx(){
+  if (!S.connected || S.ourTx) return;
+  if (!send('trx:' + S.rx + ',true')) return;
+  S.ourTx = true; S.txStart = Date.now();
+  const limit = timeoutSec();
+  log('TX avviato (timeout ' + limit + ' s)', 'sys');
+  S.txTick = setInterval(() => {
+    const el = (Date.now() - S.txStart) / 1000;
+    const left = Math.max(0, limit - el);
+    $('#txInfo').textContent = 'IN TRASMISSIONE · ' + el.toFixed(0) + ' s · stop tra ' + left.toFixed(0) + ' s';
+    if (el >= limit) stopTx('timeout ' + limit + ' s');
+  }, 200);
+  S.txConfirmCheck = setTimeout(() => {
+    if (S.ourTx && !S.tx) log('Attenzione: la radio non ha confermato il TX (trx:…,true)', 'err');
+  }, 2000);
+  updatePttUi();
+}
+function stopTx(reason){
+  S.stopAt = Date.now();
+  send('trx:' + S.rx + ',false');
+  // Secondo invio di sicurezza se la radio risulta ancora in TX
+  setTimeout(() => { if (S.tx && S.connected){ log('Radio ancora in TX: reinvio stop', 'err'); send('trx:' + S.rx + ',false'); } }, 700);
+  endTxLocal(reason);
+}
+function endTxLocal(reason){
+  if (!S.ourTx) return;
+  S.ourTx = false;
+  clearInterval(S.txTick); clearTimeout(S.txConfirmCheck);
+  log('TX terminato: ' + reason, 'sys');
+  $('#txInfo').textContent = 'TX terminato: ' + reason;
+  updatePttUi();
+}
+
+// Sicurezze: Esc, pagina in background, chiusura pagina
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && (S.ourTx || S.tx)) { if (S.ourTx) stopTx('Esc'); else send('trx:' + S.rx + ',false'); } });
+document.addEventListener('visibilitychange', () => { if (document.hidden && S.ourTx) stopTx('pagina in background'); });
+window.addEventListener('pagehide', () => { if (S.ourTx) send('trx:' + S.rx + ',false'); });
+
+// ---------- Log controlli ----------
+$('#btnClearLog').onclick = () => { logEl.innerHTML = ''; };
+$('#btnRaw').onclick = () => {
+  const c = $('#rawCmd').value.trim();
+  if (!c) return;
+  if (/^trx\s*:.*true/i.test(c) || /^tune\s*:.*true/i.test(c)){ log('Per trasmettere usa il pulsante PTT (con conferma e timeout)', 'err'); return; }
+  send(c); $('#rawCmd').value = '';
+};
+$('#rawCmd').addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnRaw').click(); });
+
+// =====================================================================
+// ---------- Stream binari TCI (IQ e audio) ----------
+// Header 64 byte little-endian (specifica TCI ExpertSDR):
+//   u32 receiver, sample_rate, format, codec, crc, length, type, channels, reserved[8]
+//   format: 0=int16, 1=int24, 2=int32, 3=float32 · type: 0=IQ, 1=audio RX
+// Il numero di campioni si ricava dalla dimensione del frame (più robusto del campo length).
+// =====================================================================
+const ST_IQ = 0, ST_RX_AUDIO = 1;
+function decodeSamples(buf, fmt){
+  const bytes = buf.byteLength - 64;
+  if (bytes <= 0) return null;
+  if (fmt === 3) return new Float32Array(buf, 64, bytes >> 2);
+  if (fmt === 0){
+    const src = new Int16Array(buf, 64, bytes >> 1), out = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) out[i] = src[i] / 32768;
+    return out;
+  }
+  if (fmt === 2){
+    const src = new Int32Array(buf, 64, bytes >> 2), out = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) out[i] = src[i] / 2147483648;
+    return out;
+  }
+  if (fmt === 1){
+    const n = Math.floor(bytes / 3), dv = new DataView(buf, 64), out = new Float32Array(n);
+    for (let i = 0; i < n; i++){
+      let v = dv.getUint8(i*3) | (dv.getUint8(i*3+1) << 8) | (dv.getUint8(i*3+2) << 16);
+      if (v & 0x800000) v -= 0x1000000;
+      out[i] = v / 8388608;
+    }
+    return out;
+  }
+  return null;
+}
+const fmtWarned = {};
+function handleBinary(buf){
+  if (!(buf instanceof ArrayBuffer) || buf.byteLength < 64) return;
+  const h = new DataView(buf, 0, 64);
+  const rx = h.getUint32(0, true), rate = h.getUint32(4, true), fmt = h.getUint32(8, true);
+  const codec = h.getUint32(12, true), type = h.getUint32(24, true);
+  const ch = h.getUint32(28, true) || 2;
+  if (rx !== S.rx) return;
+  if (codec !== 0){ if (!fmtWarned['c' + codec]){ fmtWarned['c' + codec] = 1; log('Stream compresso (codec ' + codec + ') non supportato', 'err'); } return; }
+  const data = decodeSamples(buf, fmt);
+  if (!data){ if (!fmtWarned['f' + fmt]){ fmtWarned['f' + fmt] = 1; log('Formato campioni sconosciuto: ' + fmt, 'err'); } return; }
+  if (type === ST_IQ) iqIn(data, rate);
+  else if (type === ST_RX_AUDIO) audioIn(data, rate, ch);
+}
+
+// ---------- Panadapter ----------
+const P = {
+  on: false, rate: 48000, N: 2048, ring: null, ringPos: 0, filled: 0,
+  win: null, wsum: 1, cosT: null, sinT: null, rev: null, re: null, im: null, avg: null, db: null,
+  center: null, floor: -130, dirty: false, lastDraw: 0, raf: null,
+  bytes: 0, frames: 0, t0: 0, palette: null
+};
+
+function fftSetup(N){
+  P.N = N;
+  P.ring = new Float32Array(N * 2); P.ringPos = 0; P.filled = 0; P.avg = null;
+  P.win = new Float32Array(N); let s = 0;
+  for (let i = 0; i < N; i++){        // finestra Blackman-Harris a 4 termini
+    const a = 2 * Math.PI * i / (N - 1);
+    const w = 0.35875 - 0.48829 * Math.cos(a) + 0.14128 * Math.cos(2 * a) - 0.01168 * Math.cos(3 * a);
+    P.win[i] = w; s += w;
+  }
+  P.wsum = s;
+  P.cosT = new Float32Array(N / 2); P.sinT = new Float32Array(N / 2);
+  for (let i = 0; i < N / 2; i++){ P.cosT[i] = Math.cos(-2 * Math.PI * i / N); P.sinT[i] = Math.sin(-2 * Math.PI * i / N); }
+  const bits = Math.log2(N); P.rev = new Uint32Array(N);
+  for (let i = 0; i < N; i++){ let r = 0, x = i; for (let b = 0; b < bits; b++){ r = (r << 1) | (x & 1); x >>= 1; } P.rev[i] = r; }
+  P.re = new Float32Array(N); P.im = new Float32Array(N); P.db = new Float32Array(N);
+}
+function fft(re, im){
+  const N = P.N, rev = P.rev, C = P.cosT, Sn = P.sinT;
+  for (let i = 0; i < N; i++){ const j = rev[i]; if (j > i){ let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+  for (let size = 2; size <= N; size <<= 1){
+    const half = size >> 1, step = N / size;
+    for (let i = 0; i < N; i += size){
+      for (let j = 0, k = 0; j < half; j++, k += step){
+        const a = i + j, b = a + half;
+        const tr = re[b] * C[k] - im[b] * Sn[k];
+        const ti = re[b] * Sn[k] + im[b] * C[k];
+        re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+      }
+    }
+  }
+}
+function iqIn(d, rate){
+  if (!P.on) return;
+  if (rate && rate !== P.rate){ P.rate = rate; updateAxis(); }
+  P.bytes += d.byteLength; P.frames++;
+  const ring = P.ring, L = ring.length;
+  let p = P.ringPos;
+  const n = d.length & ~1;
+  // Se arriva più di un buffer FFT, tieni solo i campioni più recenti
+  const start = n > L ? n - L : 0;
+  for (let i = start; i < n; i += 2){ ring[p] = d[i]; ring[p + 1] = d[i + 1]; p += 2; if (p >= L) p = 0; }
+  P.ringPos = p;
+  P.filled = Math.min(P.filled + (n - start), L);
+  P.dirty = true;
+}
+function centerFreq(){ return P.center != null ? P.center : S.freq; }
+function fmtMHz(hz){ return (hz / 1e6).toFixed(3); }
+function updateAxis(){
+  const c = centerFreq();
+  if (c == null){ $('#axL').textContent = $('#axC').textContent = $('#axR').textContent = '—'; return; }
+  $('#axL').textContent = fmtMHz(c - P.rate / 2);
+  $('#axC').textContent = fmtMHz(c) + ' MHz';
+  $('#axR').textContent = fmtMHz(c + P.rate / 2);
+}
+function passband(mode){
+  const m = (mode || '').toLowerCase();
+  if (m === 'usb') return [150, 2850];
+  if (m === 'lsb') return [-2850, -150];
+  if (m === 'digu') return [0, 3000];
+  if (m === 'digl') return [-3000, 0];
+  if (m.startsWith('cw')) return [-250, 250];
+  if (m === 'am' || m === 'sam' || m === 'dsb') return [-4000, 4000];
+  if (m.includes('fm')) return [-6000, 6000];
+  return null;
+}
+function buildPalette(){
+  const stops = [[0,[0,0,16]],[0.25,[10,42,138]],[0.5,[0,180,216]],[0.7,[240,224,0]],[0.85,[255,128,0]],[1,[255,16,16]]];
+  const pal = new Uint8ClampedArray(256 * 3);
+  for (let i = 0; i < 256; i++){
+    const t = i / 255; let k = 0;
+    while (k < stops.length - 2 && t > stops[k + 1][0]) k++;
+    const [t0, c0] = stops[k], [t1, c1] = stops[k + 1];
+    const f = (t - t0) / (t1 - t0);
+    for (let j = 0; j < 3; j++) pal[i * 3 + j] = c0[j] + (c1[j] - c0[j]) * f;
+  }
+  P.palette = pal;
+}
+function sizeCanvas(c){
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(c.clientWidth * dpr)), h = Math.max(1, Math.round(c.clientHeight * dpr));
+  if (c.width !== w || c.height !== h){ c.width = w; c.height = h; return true; }
+  return false;
+}
+function panFrame(t){
+  P.raf = requestAnimationFrame(panFrame);
+  if (!P.on || !P.dirty || P.filled < P.ring.length) return;
+  if (t - P.lastDraw < 40) return;      // max ~25 fotogrammi/s
+  P.lastDraw = t; P.dirty = false;
+
+  const N = P.N, re = P.re, im = P.im, ring = P.ring, L = ring.length, win = P.win;
+  const swap = $('#iqSwap').checked;
+  let p = P.ringPos;                    // campione più vecchio
+  for (let i = 0; i < N; i++){
+    const I = ring[p], Q = ring[p + 1]; p += 2; if (p >= L) p = 0;
+    const w = win[i];
+    if (swap){ re[i] = Q * w; im[i] = I * w; } else { re[i] = I * w; im[i] = Q * w; }
+  }
+  fft(re, im);
+  const a = parseFloat($('#avg').value), norm = 1 / (P.wsum * P.wsum), first = !P.avg;
+  if (first) P.avg = new Float32Array(N);
+  const half = N >> 1, avg = P.avg, db = P.db;
+  for (let k = 0; k < N; k++){
+    const pw = (re[k] * re[k] + im[k] * im[k]) * norm + 1e-20;
+    const j = (k + half) & (N - 1);     // fftshift: frequenze negative a sinistra
+    avg[j] = first ? pw : a * avg[j] + (1 - a) * pw;
+  }
+  for (let j = 0; j < N; j++) db[j] = 10 * Math.log10(avg[j]);
+
+  if ($('#autoFloor').checked){
+    const sample = [];
+    for (let j = 0; j < N; j += 4) sample.push(db[j]);
+    sample.sort((x, y) => x - y);
+    const target = sample[Math.floor(sample.length * 0.2)] - 8;
+    P.floor += (target - P.floor) * (first ? 1 : 0.08);
+    $('#floor').value = Math.round(P.floor);
+    $('#floorLbl').textContent = Math.round(P.floor) + ' dB';
+  } else P.floor = parseFloat($('#floor').value);
+
+  drawSpectrum(db);
+  drawWaterfall(db);
+}
+function binsToColumns(db, W){
+  // Per ogni colonna di pixel: massimo dei bin che vi cadono (non perde i segnali stretti)
+  const N = db.length, out = new Float32Array(W);
+  for (let x = 0; x < W; x++){
+    const b0 = Math.floor(x * N / W), b1 = Math.max(b0 + 1, Math.floor((x + 1) * N / W));
+    let m = -1e9; for (let b = b0; b < b1 && b < N; b++) if (db[b] > m) m = db[b];
+    out[x] = m;
+  }
+  return out;
+}
+function drawSpectrum(db){
+  const c = $('#spec'); sizeCanvas(c);
+  const ctx = c.getContext('2d'), W = c.width, H = c.height;
+  const range = parseFloat($('#range').value), floor = P.floor;
+  ctx.fillStyle = '#05070a'; ctx.fillRect(0, 0, W, H);
+
+  // Griglia: ogni 10 dB e 10 divisioni orizzontali
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let v = Math.ceil(floor / 10) * 10; v < floor + range; v += 10){ const y = Math.round(H - (v - floor) / range * H) + 0.5; ctx.moveTo(0, y); ctx.lineTo(W, y); }
+  for (let i = 1; i < 10; i++){ const x = Math.round(W * i / 10) + 0.5; ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+  ctx.stroke();
+
+  // Banda passante e VFO
+  const cf = centerFreq();
+  if (cf != null && S.freq != null){
+    const xOf = hz => ((hz - cf) / P.rate + 0.5) * W;
+    const pb = passband(S.mode);
+    if (pb){ const x0 = xOf(S.freq + pb[0]), x1 = xOf(S.freq + pb[1]); ctx.fillStyle = 'rgba(74,158,255,0.18)'; ctx.fillRect(x0, 0, Math.max(1, x1 - x0), H); }
+    const xv = Math.round(xOf(S.freq)) + 0.5;
+    ctx.strokeStyle = S.ourTx || S.tx ? '#ff3b3b' : '#ffcc33'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(xv, 0); ctx.lineTo(xv, H); ctx.stroke();
+  }
+
+  // Spettro
+  const col = binsToColumns(db, W);
+  ctx.beginPath();
+  for (let x = 0; x < W; x++){
+    const y = H - clamp((col[x] - floor) / range, 0, 1) * H;
+    if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = '#7fe3ff'; ctx.lineWidth = Math.max(1, (window.devicePixelRatio || 1));
+  ctx.stroke();
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+  ctx.fillStyle = 'rgba(127,227,255,0.15)'; ctx.fill();
+
+  // Etichette dB
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.font = (10 * (window.devicePixelRatio || 1)) + 'px monospace';
+  ctx.fillText(Math.round(floor + range) + ' dB', 4, 12 * (window.devicePixelRatio || 1));
+  ctx.fillText(Math.round(floor) + ' dB', 4, H - 4);
+}
+function drawWaterfall(db){
+  const c = $('#wf'); sizeCanvas(c);
+  const ctx = c.getContext('2d'), W = c.width, H = c.height;
+  if (H > 1) ctx.drawImage(c, 0, 0, W, H - 1, 0, 1, W, H - 1);   // scorre di una riga verso il basso
+  const col = binsToColumns(db, W), range = parseFloat($('#range').value), floor = P.floor;
+  const row = ctx.createImageData(W, 1), d = row.data, pal = P.palette;
+  for (let x = 0; x < W; x++){
+    const i = Math.round(clamp((col[x] - floor) / range, 0, 1) * 255) * 3;
+    d[x * 4] = pal[i]; d[x * 4 + 1] = pal[i + 1]; d[x * 4 + 2] = pal[i + 2]; d[x * 4 + 3] = 255;
+  }
+  ctx.putImageData(row, 0, 0);
+}
+function clearPan(){
+  ['#spec', '#wf'].forEach(s => { const c = $(s); sizeCanvas(c); const ctx = c.getContext('2d'); ctx.fillStyle = '#05070a'; ctx.fillRect(0, 0, c.width, c.height); });
+}
+
+function iqStart(){
+  if (!S.connected) return;
+  P.rate = parseInt($('#iqRate').value, 10);
+  fftSetup(parseInt($('#fftSize').value, 10));
+  send('iq_samplerate:' + P.rate);
+  send('iq_start:' + S.rx);
+  P.on = true; P.t0 = Date.now(); P.bytes = 0; P.frames = 0;
+  updateAxis(); clearPan(); streamsUi();
+  if (!P.raf) P.raf = requestAnimationFrame(panFrame);
+}
+function iqStop(sendCmd){
+  if (sendCmd && P.on) send('iq_stop:' + S.rx);
+  P.on = false;
+  if (P.raf){ cancelAnimationFrame(P.raf); P.raf = null; }
+  streamsUi();
+}
+$('#btnIq').onclick = () => { if (P.on) iqStop(true); else iqStart(); };
+$('#iqRate').onchange = () => {
+  store.set('iqRate', $('#iqRate').value);
+  if (P.on){ iqStop(true); setTimeout(iqStart, 150); }   // alcuni server cambiano velocità solo a stream fermo
+};
+$('#fftSize').onchange = () => { store.set('fftSize', $('#fftSize').value); if (P.on) fftSetup(parseInt($('#fftSize').value, 10)); };
+$('#floor').oninput = () => { $('#autoFloor').checked = false; $('#floorLbl').textContent = $('#floor').value + ' dB'; };
+$('#range').oninput = () => { $('#rangeLbl').textContent = $('#range').value + ' dB'; store.set('range', $('#range').value); };
+$('#avg').onchange = () => store.set('avg', $('#avg').value);
+$('#panWrap').addEventListener('click', e => {
+  const cf = centerFreq();
+  if (!P.on || cf == null) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  const frac = (e.clientX - r.left) / r.width;
+  setFreq(Math.round((cf + (frac - 0.5) * P.rate) / 10) * 10);
+});
+
+// ---------- Audio RX ----------
+// Web Audio con buffer programmati in sequenza: funziona anche in HTTP semplice
+// (AudioWorklet richiederebbe HTTPS o localhost).
+const A = { ctx: null, gain: null, on: false, next: 0, muted: false, bytes: 0, under: 0, drop: 0, t0: 0, lastData: 0, rate: 0 };
+function setVol(){ if (A.gain) A.gain.gain.value = A.muted ? 0 : parseFloat($('#vol').value); }
+function audioStart(){
+  if (!S.connected) return;
+  try {
+    if (!A.ctx){
+      const AC = window.AudioContext || window.webkitAudioContext;
+      try { A.ctx = new AC({ sampleRate: 48000, latencyHint: 'interactive' }); } catch (e){ A.ctx = new AC(); }
+      A.gain = A.ctx.createGain(); A.gain.connect(A.ctx.destination);
+    }
+    A.ctx.resume();
+  } catch (e){ log('Web Audio non disponibile: ' + e.message, 'err'); return; }
+  setVol();
+  send('audio_samplerate:48000');
+  send('audio_stream_sample_type:float32');
+  send('audio_stream_channels:2');
+  send('audio_start:' + S.rx);
+  A.on = true; A.next = 0; A.bytes = 0; A.under = 0; A.drop = 0; A.t0 = Date.now(); A.lastData = 0;
+  streamsUi();
+}
+function audioStop(sendCmd){
+  if (sendCmd && A.on) send('audio_stop:' + S.rx);
+  A.on = false; A.next = 0;
+  if (A.ctx) A.ctx.suspend().catch(() => {});
+  streamsUi();
+}
+function audioIn(d, rate, ch){
+  if (!A.on || !A.ctx) return;
+  rate = rate || 48000; A.rate = rate;
+  A.lastData = Date.now(); A.bytes += d.byteLength;
+  const frames = Math.floor(d.length / ch); if (!frames) return;
+  const now = A.ctx.currentTime;
+  if (A.next > now + 0.5){ A.drop++; return; }                     // troppo ritardo accumulato: scarta
+  if (A.next < now + 0.02){ if (A.next) A.under++; A.next = now + 0.15; } // buffer vuoto: ricrea margine di 150 ms
+  const outCh = Math.min(ch, 2);
+  const buf = A.ctx.createBuffer(outCh, frames, rate);
+  for (let c = 0; c < outCh; c++){ const o = buf.getChannelData(c); for (let i = 0; i < frames; i++) o[i] = d[i * ch + c]; }
+  const src = A.ctx.createBufferSource();
+  src.buffer = buf; src.connect(A.gain); src.start(A.next);
+  A.next += frames / rate;
+}
+$('#btnAudio').onclick = () => { if (A.on) audioStop(true); else audioStart(); };
+$('#btnMute').onclick = () => { A.muted = !A.muted; $('#btnMute').classList.toggle('sel', A.muted); setVol(); };
+$('#vol').oninput = () => { setVol(); store.set('vol', $('#vol').value); };
+
+function streamsUi(){
+  const ok = S.connected;
+  $('#btnIq').disabled = !ok; $('#btnIq').textContent = P.on ? 'Ferma IQ' : 'Avvia IQ';
+  $('#btnIq').classList.toggle('sel', P.on);
+  $('#btnAudio').disabled = !ok; $('#btnAudio').textContent = A.on ? 'Ferma audio' : 'Avvia audio';
+  $('#btnAudio').classList.toggle('sel', A.on);
+  if (!P.on) $('#iqStat').textContent = 'IQ fermo';
+  if (!A.on) $('#audioStat').textContent = 'Audio fermo';
+}
+// Statistiche e diagnosi "nessun dato"
+setInterval(() => {
+  const now = Date.now();
+  if (P.on){
+    const s = (now - P.t0) / 1000;
+    if (!P.frames && s > 3) $('#iqStat').textContent = 'Nessun dato IQ da ' + Math.round(s) + ' s: il server potrebbe non supportare lo stream IQ (vedi log)';
+    else if (P.frames) $('#iqStat').textContent = (P.rate / 1000) + ' kHz · ' + (P.bytes / 1024 / s).toFixed(0) + ' kB/s · FFT ' + P.N;
+  }
+  if (A.on){
+    const s = (now - A.t0) / 1000;
+    if (!A.lastData && s > 3) $('#audioStat').textContent = 'Nessun dato audio da ' + Math.round(s) + ' s: il server potrebbe non supportare lo stream audio (vedi log)';
+    else if (A.lastData){
+      const lat = A.ctx ? Math.max(0, (A.next - A.ctx.currentTime) * 1000) : 0;
+      $('#audioStat').textContent = (A.rate / 1000) + ' kHz · ritardo ' + lat.toFixed(0) + ' ms · vuoti ' + A.under + ' · scartati ' + A.drop
+        + (A.ctx && A.ctx.state !== 'running' ? ' · audio sospeso dal browser: premi di nuovo Avvia' : '');
+    }
+  }
+}, 1000);
+
+// ---------- Avvio ----------
+$('#host').value = store.get('host', location.hostname || 'localhost');
+$('#port').value = store.get('port', 40001);
+$('#rxsel').value = String(store.get('rx', 0));
+$('#txTimeout').value = String(store.get('txTimeout', 30));
+$('#btnConnect').onclick = connect;
+$('#btnDisconnect').onclick = disconnect;
+$('#arm').checked = false; // sempre bloccato all'apertura
+$('#iqRate').value = String(store.get('iqRate', '48000'));
+$('#fftSize').value = String(store.get('fftSize', '2048'));
+$('#range').value = String(store.get('range', '70')); $('#rangeLbl').textContent = $('#range').value + ' dB';
+$('#avg').value = String(store.get('avg', '0.6'));
+$('#vol').value = String(store.get('vol', '0.8'));
+buildPalette(); clearPan();
+window.addEventListener('resize', () => { if (!P.on) clearPan(); });
+buildBands(); buildModes(); showWheelStep(); setStatus('closed');
+log('Pronto. Inserisci host e porta del server TCI e premi Connetti.', 'sys');
+})();
+</script>
+</body>
+</html>
